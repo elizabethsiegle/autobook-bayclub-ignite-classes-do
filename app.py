@@ -5,6 +5,9 @@ import logging
 import time
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 from dotenv import load_dotenv
+from dateutil import parser
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
 
 load_dotenv()
 
@@ -16,6 +19,11 @@ logging.basicConfig(
 
 USERNAME = os.environ["BAYCLUB_USERNAME"]
 PASSWORD = os.environ["BAYCLUB_PASSWORD"]
+# Check if running in production (can be set via environment variable)
+CALENDAR_CREDENTIALS = os.environ.get(
+    "CALENDAR_CREDENTIALS_PATH", 
+    os.path.expanduser("~/.credentials/credentials.json")
+)
 
 
 class BayClubIgniteBooking:
@@ -243,6 +251,82 @@ class BayClubIgniteBooking:
             self.page.screenshot(path="confirm_booking_failed.png")
             return False
 
+    def get_class_date(self):
+        """Extract the class date from the page"""
+        try:
+            date_xpath = "/html/body/app-root/div/app-classes-shell/app-classes/div/div[3]/div/app-classes-date/div/span[2]"
+            date_element = self.page.query_selector(f"xpath={date_xpath}")
+            if date_element:
+                date_text = date_element.text_content().strip()
+                logging.info(f"Class date: {date_text}")
+                return date_text
+            return None
+        except Exception as e:
+            logging.warning(f"Could not extract class date: {e}")
+            return None
+
+    def add_to_calendar(self, class_date_text):
+        """Add the booked class to Google Calendar using service account"""
+        try:
+            # Check if credentials exist
+            if not os.path.exists(CALENDAR_CREDENTIALS):
+                logging.warning(f"Google Calendar credentials not found at {CALENDAR_CREDENTIALS}")
+                logging.warning("Skipping calendar event creation. See SETUP_GUIDE.md for setup instructions.")
+                return False
+            
+            logging.info("Adding event to Google Calendar...")
+            
+            # Parse the date (format might be like "Wednesday, January 15")
+            # Add current year if not present
+            if str(datetime.datetime.now().year) not in class_date_text:
+                class_date_text += f", {datetime.datetime.now().year}"
+            
+            # Parse the date string
+            class_date = parser.parse(class_date_text)
+            
+            # Set time to 5:30 PM - 6:20 PM
+            start = class_date.replace(hour=17, minute=30, second=0, microsecond=0)
+            end = start + datetime.timedelta(minutes=50)
+            
+            # Format for Google Calendar API
+            start_time = start.isoformat()
+            end_time = end.isoformat()
+            
+            # Load service account credentials
+            credentials = service_account.Credentials.from_service_account_file(
+                CALENDAR_CREDENTIALS,
+                scopes=['https://www.googleapis.com/auth/calendar']
+            )
+            
+            # Build the Calendar service
+            service = build('calendar', 'v3', credentials=credentials)
+            
+            # Create the event
+            event = {
+                'summary': 'Ignite - Bay Club San Francisco',
+                'location': 'Bay Club San Francisco',
+                'description': '5:30-6:20 PM Ignite Class',
+                'start': {
+                    'dateTime': start_time,
+                    'timeZone': 'America/Los_Angeles',
+                },
+                'end': {
+                    'dateTime': end_time,
+                    'timeZone': 'America/Los_Angeles',
+                },
+            }
+            
+            # Insert event into primary calendar
+            created_event = service.events().insert(calendarId='primary', body=event).execute()
+            
+            logging.info(f"✓ Calendar event created: {start.strftime('%A, %B %d at %I:%M %p')}")
+            return True
+            
+        except Exception as e:
+            logging.error(f"Failed to add to calendar: {e}")
+            logging.warning("Booking succeeded but calendar event creation failed")
+            return False
+
 
 def main(test_mode=False, force_mode=False):
     """Main booking logic"""
@@ -280,6 +364,9 @@ def main(test_mode=False, force_mode=False):
             if not booking.select_day(target_day):
                 raise RuntimeError(f"Failed to select {target_day}")
             
+            # Get the class date before selecting the class
+            class_date = booking.get_class_date()
+            
             if not booking.select_ignite():
                 raise RuntimeError("Failed to find Ignite class")
             
@@ -291,6 +378,11 @@ def main(test_mode=False, force_mode=False):
                 raise RuntimeError("Failed to confirm")
             
             logging.info(f"✓ Successfully booked {target_day} 5:30-6:30 PM Ignite!")
+            
+            # Add to Google Calendar
+            if class_date:
+                booking.add_to_calendar(class_date)
+            
             return True
             
     except Exception as e:
