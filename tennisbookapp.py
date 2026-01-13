@@ -4,16 +4,8 @@ import datetime
 import logging
 import time
 import requests
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
-from dotenv import load_dotenv
 from dateutil import parser
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-
-# calendar not working, ends in error, booking court that isn't in my preferences
-
-load_dotenv()
-MODEL_ACCESS_KEY = os.environ.get("MODEL_ACCESS_KEY")
+from bayclub_base import BayClubBookingBase
 
 logging.basicConfig(
     level=logging.INFO,
@@ -21,86 +13,13 @@ logging.basicConfig(
     datefmt='%d-%b-%y %H:%M:%S'
 )
 
-USERNAME = os.environ["BAYCLUB_USERNAME"]
-PASSWORD = os.environ["BAYCLUB_PASSWORD"]
 MODEL_ACCESS_KEY = os.environ.get("MODEL_ACCESS_KEY")
-# Check if running in production (can be set via environment variable)
-CALENDAR_CREDENTIALS = os.environ.get(
-    "CALENDAR_CREDENTIALS_PATH", 
-    os.path.expanduser("~/.credentials/credentials.json")
-)
 
 
-class BayClubTennisBooking:
+class BayClubTennisBooking(BayClubBookingBase):
     """Book tennis courts at Bay Club Gateway on Friday and Sunday"""
     
-    def __init__(self, headless=True):
-        self.headless = headless
-        self.playwright = None
-        self.browser = None
-        self.page = None
-        self.calendar_service = None
-        
-    def __enter__(self):
-        self.playwright = sync_playwright().start()
-        self.browser = self.playwright.chromium.launch(
-            headless=self.headless,
-            args=['--no-sandbox', '--disable-dev-shm-usage']
-        )
-        context = self.browser.new_context(
-            viewport={'width': 1280, 'height': 720},
-            user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
-        )
-        self.page = context.new_page()
-        self.page.goto("https://bayclubconnect.com/home/dashboard", timeout=10000)
-        
-        # Initialize calendar service
-        self._init_calendar()
-        
-        return self
-    
-    def _init_calendar(self):
-        """Initialize Google Calendar API service"""
-        try:
-            if os.path.exists(CALENDAR_CREDENTIALS):
-                credentials = service_account.Credentials.from_service_account_file(
-                    CALENDAR_CREDENTIALS,
-                    scopes=['https://www.googleapis.com/auth/calendar']
-                )
-                self.calendar_service = build('calendar', 'v3', credentials=credentials)
-                logging.info("Calendar service initialized")
-            else:
-                logging.warning("Calendar credentials not found, skipping calendar integration")
-        except Exception as e:
-            logging.warning(f"Failed to initialize calendar service: {e}")
-        
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        if self.browser:
-            self.browser.close()
-        if self.playwright:
-            self.playwright.stop()
-
-    def login(self):
-        """Login to Bay Club"""
-        logging.info("Logging in...")
-        self.page.wait_for_selector("#username", timeout=5000).fill(USERNAME)
-        self.page.wait_for_selector("#password", timeout=5000).fill(PASSWORD)
-        time.sleep(1)
-        
-        # Click login button
-        button = self.page.query_selector("button.btn-light-blue")
-        if button:
-            button.click(force=True)
-            logging.info("Login button clicked")
-        
-        # Wait for login to complete
-        try:
-            self.page.wait_for_load_state("networkidle", timeout=10000)
-        except PlaywrightTimeoutError:
-            time.sleep(3)
-        
-        time.sleep(2)
-        logging.info("Login complete")
+    # Inherit __init__, __enter__, __exit__, login, and calendar methods from base class
 
     def get_calendar_events(self, target_date):
         """Get calendar events for a specific date"""
@@ -545,36 +464,18 @@ class BayClubTennisBooking:
 
     def add_tennis_to_calendar(self, booking_time, duration_minutes=90):
         """Add the booked tennis court to Google Calendar"""
-        if not self.calendar_service:
-            logging.warning("Calendar service not available")
-            return False
-        
         try:
-            logging.info("Adding tennis booking to Google Calendar...")
-            
             start = booking_time
             end = start + datetime.timedelta(minutes=duration_minutes)
             
-            # Create the event
-            event = {
-                'summary': 'Tennis Court - Bay Club Gateway',
-                'location': 'Bay Club Gateway',
-                'description': f'{duration_minutes}-minute tennis court booking',
-                'start': {
-                    'dateTime': start.isoformat(),
-                    'timeZone': 'America/Los_Angeles',
-                },
-                'end': {
-                    'dateTime': end.isoformat(),
-                    'timeZone': 'America/Los_Angeles',
-                },
-            }
-            
-            # Insert event into primary calendar
-            created_event = self.calendar_service.events().insert(calendarId='primary', body=event).execute()
-            
-            logging.info(f"✓ Calendar event created: {start.strftime('%A, %B %d at %I:%M %p')}")
-            return True
+            # Use base class method to add calendar event
+            return self.add_calendar_event(
+                summary='Tennis Court - Bay Club Gateway',
+                location='Bay Club Gateway',
+                description=f'{duration_minutes}-minute tennis court booking',
+                start_datetime=start,
+                end_datetime=end
+            )
             
         except Exception as e:
             logging.error(f"Failed to add to calendar: {e}")
@@ -654,7 +555,47 @@ Respond with ONLY the time in format like "9:00 AM" or "2:30 PM". No explanation
         
         logging.info(f"🤖 LLM recommends: {recommended_time}")
         
-        # Validate the recommendation
+        # FIRST: Check if preferred times (10am or 12pm) are available
+        # We want to prioritize these over any LLM recommendation
+        preferred_hours = [10, 12]
+        preferred_available = []
+        
+        for court_time, _ in court_times:
+            normalized_time = ' '.join(court_time.split())
+            
+            if '-' in normalized_time:
+                time_parts = normalized_time.split('-')
+                time_str = time_parts[0].strip()
+                
+                if 'AM' not in time_str.upper() and 'PM' not in time_str.upper():
+                    full_time = normalized_time.upper()
+                    if 'AM' in full_time:
+                        time_str += ' AM'
+                    elif 'PM' in full_time:
+                        time_str += ' PM'
+            else:
+                time_str = normalized_time
+            
+            try:
+                ct = parser.parse(time_str)
+                # Check if it's a preferred time AND in calendar
+                if ct.hour in preferred_hours:
+                    for cal_time in calendar_times:
+                        if ct.hour == cal_time.hour and ct.minute == cal_time.minute:
+                            preferred_available.append((court_time, ct.hour))
+            except Exception as e:
+                logging.debug(f"Could not parse time '{court_time}': {e}")
+                continue
+        
+        # If preferred times are available, use them (prefer 10am over 12pm)
+        if preferred_available:
+            # Sort by hour (10am first, then 12pm)
+            preferred_available.sort(key=lambda x: x[1])
+            chosen_time = preferred_available[0][0]
+            logging.info(f"✓ Using PREFERRED time over LLM recommendation: {chosen_time}")
+            return chosen_time
+        
+        # No preferred times available, so validate LLM recommendation
         try:
             rec_time = parser.parse(recommended_time)
             # Check it exists in court times
@@ -683,7 +624,7 @@ Respond with ONLY the time in format like "9:00 AM" or "2:30 PM". No explanation
                         # Check it exists in calendar times
                         for cal_time in calendar_times:
                             if ct.hour == cal_time.hour and ct.minute == cal_time.minute:
-                                logging.info(f"✓ LLM recommendation validated: {recommended_time}")
+                                logging.info(f"✓ LLM recommendation validated (no preferred times available): {recommended_time}")
                                 return court_time
                 except Exception as e:
                     logging.debug(f"Error parsing court_time '{court_time}': {e}")
@@ -691,18 +632,16 @@ Respond with ONLY the time in format like "9:00 AM" or "2:30 PM". No explanation
         except Exception as e:
             logging.warning(f"Could not parse LLM recommendation '{recommended_time}': {e}")
         
-        # Fallback: return first matching time
-        logging.warning("LLM recommendation invalid, using fallback")
+        # Fallback: return any matching time
+        logging.warning("LLM recommendation invalid, using any available fallback")
+        
         for court_time, _ in court_times:
-            # Normalize the time string by replacing multiple spaces with single space
             normalized_time = ' '.join(court_time.split())
             
-            # Parse time ranges like "6:00 - 7:30 AM" by extracting start time
             if '-' in normalized_time:
                 time_parts = normalized_time.split('-')
-                time_str = time_parts[0].strip()  # Get "6:00"
+                time_str = time_parts[0].strip()
                 
-                # If no AM/PM in start time, get it from end of full string
                 if 'AM' not in time_str.upper() and 'PM' not in time_str.upper():
                     full_time = normalized_time.upper()
                     if 'AM' in full_time:
@@ -792,6 +731,8 @@ def main():
                                         
                                         booked_time = parser.parse(start_time_str)
                                         booked_datetime = datetime.datetime.combine(friday_date, booked_time.time())
+                                        # Make timezone-aware for calendar API
+                                        booked_datetime = booked_datetime.replace(tzinfo=datetime.timezone.utc)
                                         booking.add_tennis_to_calendar(booked_datetime)
                                         logging.info(f"✓ Successfully booked Friday at {time_text}!")
                                         booked = True

@@ -1,4 +1,4 @@
-# Auto-book Bay Club San Francisco Ignite classes using Cron on DigitalOcean Droplets
+# Auto-book Bay Club San Francisco Ignite classes using Cron on DigitalOcean Droplets and Tennis Courts according to your Google Calendar
 
 This script runs twice a week to auto-book Bay Club Ignite classes for me via a [DigitalOcean droplet](https://www.digitalocean.com/products/droplets).
 
@@ -21,9 +21,9 @@ playwright install chromium
 That's all local! ssh into your droplet.
 
 ## Deployment
-1. Upload files to `/bayclub-schedule-ignite` on your droplet.
+1. Upload files to `/bayclub-schedule-ignite` on your droplet (and /)
 a. ssh into server: `ssh root@YOUR-DROPLET-IP`
-b. `scp -r * root@YOUR-DROPLET-IP:/bayclub-schedule-ignite`
+b. `scp -r app.py env root@YOUR-DROPLET-IP:/bayclub-schedule-ignite`
 2. install dependencies on the server
 
 ```bash
@@ -35,7 +35,7 @@ playwright install chromium
 playwright install-deps
 ```
 
-Install cronjob for whenever you want to book the classes (the code in `app.py` presumes you want to book Wednesday and Thursday Ignite classes at 5:30pm each)
+Install cronjob for whenever you want to book the classes (the code in `app.py` presumes you want to book Wednesday and Thursday Ignite classes at 5:30pm each, as I do!) For tennis court booking, it checks my calendar (see below for setup), scrapes Bay Club for open tennis courts, passes those both to a LLM, and decides what to book. 
 
 ```bash
 crontab -e
@@ -54,5 +54,5 @@ Run locally with `python3 app.py` to book the classes.
 Whenever you edit a file locally, copy it over to the Droplet (from locally):
 
 ```bash
-scp app.py root@YOUR-DROPLET-IP
+scp app.py root@YOUR-DROPLET-IP:/bayclub-schedule-ignite
 ```

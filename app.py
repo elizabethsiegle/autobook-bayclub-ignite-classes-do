@@ -3,13 +3,8 @@ import sys
 import datetime
 import logging
 import time
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
-from dotenv import load_dotenv
 from dateutil import parser
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-
-load_dotenv()
+from bayclub_base import BayClubBookingBase
 
 logging.basicConfig(
     level=logging.INFO,
@@ -17,67 +12,11 @@ logging.basicConfig(
     datefmt='%d-%b-%y %H:%M:%S'
 )
 
-USERNAME = os.environ["BAYCLUB_USERNAME"]
-PASSWORD = os.environ["BAYCLUB_PASSWORD"]
-# Check if running in production (can be set via environment variable)
-CALENDAR_CREDENTIALS = os.environ.get(
-    "CALENDAR_CREDENTIALS_PATH", 
-    os.path.expanduser("~/.credentials/credentials.json")
-)
 
-
-class BayClubIgniteBooking:
+class BayClubIgniteBooking(BayClubBookingBase):
     """Book Monday and Wednesday 6:30pm Ignite classes at Bay Club San Francisco"""
     
-    def __init__(self, headless=True):
-        self.headless = headless
-        self.playwright = None
-        self.browser = None
-        self.page = None
-        
-    def __enter__(self):
-        self.playwright = sync_playwright().start()
-        self.browser = self.playwright.chromium.launch(
-            headless=self.headless,
-            args=['--no-sandbox', '--disable-dev-shm-usage']
-        )
-        context = self.browser.new_context(
-            viewport={'width': 1280, 'height': 720},
-            user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
-        )
-        self.page = context.new_page()
-        self.page.goto("https://bayclubconnect.com/home/dashboard", timeout=10000)
-        return self
-        
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        if self.browser:
-            self.browser.close()
-        if self.playwright:
-            self.playwright.stop()
-
-    def login(self):
-        """Login to Bay Club"""
-        logging.info("Logging in...")
-        self.page.wait_for_selector("#username", timeout=5000).fill(USERNAME)
-        self.page.wait_for_selector("#password", timeout=5000).fill(PASSWORD)
-        time.sleep(1)
-        
-        # Click login button
-        for selector in ["button.btn-light-blue", "button[type='submit']", "form button"]:
-            button = self.page.query_selector(selector)
-            if button:
-                button.click(force=True)
-                logging.info(f"Login button clicked: {selector}")
-                break
-        
-        # Wait for login to complete
-        try:
-            self.page.wait_for_load_state("networkidle", timeout=10000)
-        except PlaywrightTimeoutError:
-            time.sleep(3)
-        
-        time.sleep(2)
-        logging.info("Login complete")
+    # Inherit __init__, __enter__, __exit__, login, and calendar methods from base class
 
     def select_location(self):
         """Select Bay Club San Francisco location"""
@@ -266,14 +205,8 @@ class BayClubIgniteBooking:
             return None
 
     def add_to_calendar(self, class_date_text):
-        """Add the booked class to Google Calendar using service account"""
+        """Add the booked class to Google Calendar"""
         try:
-            # Check if credentials exist
-            if not os.path.exists(CALENDAR_CREDENTIALS):
-                logging.warning(f"Google Calendar credentials not found at {CALENDAR_CREDENTIALS}")
-                logging.warning("Skipping calendar event creation. See SETUP_GUIDE.md for setup instructions.")
-                return False
-            
             logging.info("Adding event to Google Calendar...")
             
             # Parse the date (format might be like "Wednesday, January 15")
@@ -288,39 +221,14 @@ class BayClubIgniteBooking:
             start = class_date.replace(hour=17, minute=30, second=0, microsecond=0)
             end = start + datetime.timedelta(minutes=50)
             
-            # Format for Google Calendar API
-            start_time = start.isoformat()
-            end_time = end.isoformat()
-            
-            # Load service account credentials
-            credentials = service_account.Credentials.from_service_account_file(
-                CALENDAR_CREDENTIALS,
-                scopes=['https://www.googleapis.com/auth/calendar']
+            # Use base class method to add calendar event
+            return self.add_calendar_event(
+                summary='Ignite - Bay Club San Francisco',
+                location='Bay Club San Francisco',
+                description='5:30-6:20 PM Ignite Class',
+                start_datetime=start,
+                end_datetime=end
             )
-            
-            # Build the Calendar service
-            service = build('calendar', 'v3', credentials=credentials)
-            
-            # Create the event
-            event = {
-                'summary': 'Ignite - Bay Club San Francisco',
-                'location': 'Bay Club San Francisco',
-                'description': '5:30-6:20 PM Ignite Class',
-                'start': {
-                    'dateTime': start_time,
-                    'timeZone': 'America/Los_Angeles',
-                },
-                'end': {
-                    'dateTime': end_time,
-                    'timeZone': 'America/Los_Angeles',
-                },
-            }
-            
-            # Insert event into primary calendar
-            created_event = service.events().insert(calendarId='primary', body=event).execute()
-            
-            logging.info(f"✓ Calendar event created: {start.strftime('%A, %B %d at %I:%M %p')}")
-            return True
             
         except Exception as e:
             logging.error(f"Failed to add to calendar: {e}")
