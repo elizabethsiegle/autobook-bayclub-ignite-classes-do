@@ -179,6 +179,8 @@ class BayClubTennisBooking:
         for hour in range(7, 21):  # 7 AM to 9 PM (last slot starts at 8 PM)
             for minute in [0, 30]:
                 check_time = datetime.datetime.combine(target_date, datetime.time(hour, minute))
+                # Make timezone-aware (UTC) to match calendar events
+                check_time = check_time.replace(tzinfo=datetime.timezone.utc)
                 
                 if self.is_time_available(check_time, 90, events):
                     available_times.append(check_time)
